@@ -17,6 +17,7 @@ public class UDPReceiver : MonoBehaviour
     [Header("=== 參照核心 ===")]
     public BattleManager battleManager;
     public TutorialManager tutorialManager;
+    public GestureChain gestureChain;
 
     [Header("=== 網路設定 ===")]
     public int port = 5065;
@@ -37,6 +38,10 @@ public class UDPReceiver : MonoBehaviour
     [SerializeField] private float angularDistanceWeight = 1.0f;
     [SerializeField] private bool useStrokeSpeedAnalysis = true;
 
+    [Header("=== 防抖設定 ===")]
+    [SerializeField] private float minPointDistanceThreshold = 0.8f;  // ⭐ 新增：相鄰點過近則過濾
+    [SerializeField] private float maxGForceDelta = 3.0f;             // ⭐ 新增：加速度突變視為噪聲
+
     [Header("=== Vision 融合 ===")]
     [SerializeField] private bool useVisionFusion = true;
 
@@ -50,9 +55,11 @@ public class UDPReceiver : MonoBehaviour
     private List<Vector2> currentTrajectory = new List<Vector2>();
     private List<OneDollarRecognizer.GestureTemplate> templates = new List<OneDollarRecognizer.GestureTemplate>();
     private bool isRecording = false;
+    private bool isInCooldown = false;  // ⭐ 新增：與 GestureChain 冷卻狀態同步
     private float startRecordingTime = 0f;
     private Vector2 virtualCursor = Vector2.zero;
     private Vector2 lastRecordedPosition = Vector2.zero;  // ⭐ 新增：追蹤上次記錄的位置
+    private float lastGForceForAccelCheck = 0f;  // ⭐ 新增：用於偵測加速度突變（噪聲）
 
     // ⭐ 新增：9 軸感測器數據
     private float lastGX = 0f;
@@ -118,6 +125,9 @@ public class UDPReceiver : MonoBehaviour
     {
         FindManagers();
 
+        // ⭐ 新增：同步 GestureChain 冷卻狀態，冷卻期間暫停軌跡記錄
+        isInCooldown = gestureChain != null && gestureChain.IsInCooldown();
+
         bool trajectoryChanged = false;
         int queueCount = 0;
 
@@ -155,6 +165,7 @@ public class UDPReceiver : MonoBehaviour
         if (battleManager == null) battleManager = BattleManager.Instance;
         if (battleManager == null) battleManager = FindAnyObjectByType<BattleManager>();
         if (tutorialManager == null) tutorialManager = FindAnyObjectByType<TutorialManager>();
+        if (gestureChain == null) gestureChain = FindAnyObjectByType<GestureChain>();
     }
 
     private void InitializeTemplates()
@@ -215,6 +226,13 @@ public class UDPReceiver : MonoBehaviour
             lastRawGValue = gForce;
             lastGValue = gForce;
 
+            // ⭐ 冷卻期間暫停軌跡記錄，避免攻擊動作殘留手抖被誤認為下一個手勢
+            if (isInCooldown)
+            {
+                lastGForceForAccelCheck = gForce;
+                return;
+            }
+
             if (!isRecording && gForce > gThreshold)
             {
                 isRecording = true;
@@ -223,11 +241,20 @@ public class UDPReceiver : MonoBehaviour
                 displayTrajectory.Clear();  // ⭐ 新增：清空顯示軌跡
                 virtualCursor = Vector2.zero;
                 lastRecordedPosition = Vector2.zero;  // ⭐ 新增：初始化上次位置
+                lastGForceForAccelCheck = gForce;  // ⭐ 新增：初始化加速度基準
                 Debug.Log($"[Arduino] 開始記錄");  // ⭐ 新增：debug log
             }
 
             if (isRecording)
             {
+                // ⭐ 新增：加速度突變視為噪聲，過濾該筆數據避免手抖誤記錄
+                float gForceDelta = Mathf.Abs(gForce - lastGForceForAccelCheck);
+                if (gForceDelta > maxGForceDelta)
+                {
+                    return;
+                }
+                lastGForceForAccelCheck = gForce;
+
                 // ⭐ 改進：使用更高的採樣率
                 float horizontalInput = -lastGZ;
                 float verticalInput = lastGY;
@@ -237,11 +264,12 @@ public class UDPReceiver : MonoBehaviour
 
                 // ⭐ 新增：插值記錄多個點，使軌跡更完整
                 float distanceToLast = Vector2.Distance(virtualCursor, lastRecordedPosition);
-                
-                if (distanceToLast > 0.5f)  // 移動超過 0.5 像素才記錄
+
+                // ⭐ 新增：距離閾值過濾，相鄰點過近視為噪聲不記錄（更強防抖）
+                if (distanceToLast > minPointDistanceThreshold)
                 {
                     // 計算需要插值多少個點
-                    int pointsToAdd = Mathf.Max(1, Mathf.FloorToInt(distanceToLast / 0.5f));
+                    int pointsToAdd = Mathf.Max(1, Mathf.FloorToInt(distanceToLast / minPointDistanceThreshold));
                     pointsToAdd = Mathf.Min(pointsToAdd, maxPointsPerUpdate);  // 限制最多插值點數
 
                     for (int i = 1; i <= pointsToAdd; i++)
@@ -322,8 +350,8 @@ public class UDPReceiver : MonoBehaviour
 
         List<Vector2> smoothed = new List<Vector2>();
 
-        // 高斯核（3 點）
-        float[] kernel = { 0.25f, 0.5f, 0.25f };
+        // 高斯核（3 點）⭐ 加強中心權重，防抖更強
+        float[] kernel = { 0.1f, 0.8f, 0.1f };
 
         for (int i = 0; i < input.Count; i++)
         {
