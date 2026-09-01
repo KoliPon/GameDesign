@@ -112,15 +112,6 @@ public class IMUGestureDetector : MonoBehaviour
         udpReceiver.FinishGesture();
     }
 
-    // ⭐ 新增：取消 UDPReceiver 的自動記錄
-    public void CancelAutoRecording()
-    {
-        if (udpReceiver != null)
-        {
-            udpReceiver.CancelAutoRecording();
-        }
-    }
-
     // ⭐ 新增：公開方法讓外部調整敏感度
     public void SetSensitivity(float threshold, int framesToEnd)
     {
