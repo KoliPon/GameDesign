@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -28,6 +28,10 @@ public class UDPReceiver : MonoBehaviour
     public float gThreshold = 1.05f;
     public float recordDuration = 1.5f;
 
+    [Header("=== ⭐ 採樣點數優化設定 ===")]
+    [SerializeField] private float fixedIMUDt = 0.002f;  // ⭐ 改：0.01 → 0.002（5 倍採樣率）
+    [SerializeField] private int maxPointsPerUpdate = 5;  // ⭐ 新增：每幀最多插值幾個點
+
     [Header("=== 辨識精準度設定 ===")]
     [SerializeField] private int resamplePointCount = 64;
     [SerializeField] private float angularDistanceWeight = 1.0f;
@@ -48,6 +52,7 @@ public class UDPReceiver : MonoBehaviour
     private bool isRecording = false;
     private float startRecordingTime = 0f;
     private Vector2 virtualCursor = Vector2.zero;
+    private Vector2 lastRecordedPosition = Vector2.zero;  // ⭐ 新增：追蹤上次記錄的位置
 
     // ⭐ 新增：9 軸感測器數據
     private float lastGX = 0f;
@@ -100,6 +105,7 @@ public class UDPReceiver : MonoBehaviour
         }
 
         Debug.Log($"[UDP] 準備啟動 UDP 接收線程，端口: {port}");
+        Debug.Log($"[UDP] ⭐ 採樣間隔: {fixedIMUDt}s (預期點數: ~{recordDuration / fixedIMUDt:F0})");
 
         receiveThread = new Thread(new ThreadStart(ReceiveData));
         receiveThread.IsBackground = true;
@@ -216,20 +222,38 @@ public class UDPReceiver : MonoBehaviour
                 currentTrajectory.Clear();
                 displayTrajectory.Clear();  // ⭐ 新增：清空顯示軌跡
                 virtualCursor = Vector2.zero;
+                lastRecordedPosition = Vector2.zero;  // ⭐ 新增：初始化上次位置
                 Debug.Log($"[Arduino] 開始記錄");  // ⭐ 新增：debug log
             }
 
             if (isRecording)
             {
-                float fixedIMUDt = 0.01f;
+                // ⭐ 改進：使用更高的採樣率
                 float horizontalInput = -lastGZ;
                 float verticalInput = lastGY;
 
                 virtualCursor.x += horizontalInput * sensitivity * fixedIMUDt;
                 virtualCursor.y += verticalInput * sensitivity * fixedIMUDt;
 
-                currentTrajectory.Add(virtualCursor);
-                displayTrajectory.Add(virtualCursor);  // ⭐ 同時保存顯示用
+                // ⭐ 新增：插值記錄多個點，使軌跡更完整
+                float distanceToLast = Vector2.Distance(virtualCursor, lastRecordedPosition);
+                
+                if (distanceToLast > 0.5f)  // 移動超過 0.5 像素才記錄
+                {
+                    // 計算需要插值多少個點
+                    int pointsToAdd = Mathf.Max(1, Mathf.FloorToInt(distanceToLast / 0.5f));
+                    pointsToAdd = Mathf.Min(pointsToAdd, maxPointsPerUpdate);  // 限制最多插值點數
+
+                    for (int i = 1; i <= pointsToAdd; i++)
+                    {
+                        float t = (float)i / (pointsToAdd + 1);
+                        Vector2 interpolatedPoint = Vector2.Lerp(lastRecordedPosition, virtualCursor, t);
+                        currentTrajectory.Add(interpolatedPoint);
+                        displayTrajectory.Add(interpolatedPoint);
+                    }
+
+                    lastRecordedPosition = virtualCursor;
+                }
             }
         }
         catch (Exception e) { Debug.LogError("解析數據錯誤: " + e.Message); }
@@ -756,6 +780,7 @@ public class UDPReceiver : MonoBehaviour
             currentTrajectory.Clear();
             displayTrajectory.Clear();
             virtualCursor = Vector2.zero;
+            lastRecordedPosition = Vector2.zero;  // ⭐ 新增：初始化
             Debug.Log($"[UDP] 開始記錄");
         }
     }
