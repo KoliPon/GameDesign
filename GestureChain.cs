@@ -507,8 +507,9 @@ public class GestureChain : MonoBehaviour
         if (currentWidth == 0) currentWidth = 1;
         if (currentHeight == 0) currentHeight = 1;
 
-        float targetWidth = 180f;
-        float targetHeight = 180f;
+        // ⭐ 修改這裡：增大目標尺寸，留出更多空間
+        float targetWidth = 50f;   // 從 180 改為 300
+        float targetHeight = 50f;  // 從 180 改為 300
         float scale = Mathf.Min(targetWidth / currentWidth, targetHeight / currentHeight);
         scale = Mathf.Min(scale, 15f);
 

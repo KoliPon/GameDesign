@@ -25,11 +25,17 @@ public class BattleManager : MonoBehaviour
     private Dictionary<int, EnemyController> enemyDict = new Dictionary<int, EnemyController>();
     private int defeatedEnemyCount = 0;
 
-    [Header("== 玩家各招式粒子特效 Prefabs ==")]
+    [Header("== 玩家單招特效 Prefabs ==")]
     public GameObject fxCirclePrefab;
     public GameObject fxSquarePrefab;
     public GameObject fxTrianglePrefab;
-    public Transform canvasParent;
+
+    [Header("== 玩家連體技特效 Prefabs ==")]
+    [SerializeField] private GameObject fxCircleCombo;      // ⭐ Circle 開頭的連體技
+    [SerializeField] private GameObject fxSquareCombo;      // ⭐ Square 開頭的連體技
+    [SerializeField] private GameObject fxTriangleCombo;    // ⭐ Triangle 開頭的連體技
+
+    [SerializeField] private Transform canvasParent;
 
     [Header("== 玩家角落浮空圖騰 UI ==")]
     public Image playerSpellFlashImage;
@@ -163,14 +169,31 @@ public class BattleManager : MonoBehaviour
 
         if (isPlayerInCooldown) return;
 
-        // 提取第一個基礎招式用於 UI 和特效
-        string displaySpell = ExtractFirstGestureFromCombo(spellName);
-        TriggerSpellFlash(displaySpell);
+        // ⭐ 提取第一個基礎招式用於 UI 和特效
+        string firstGesture = ExtractFirstGestureFromCombo(spellName);
+
+        // ⭐ 新增：判定是單招還是連體技
+        bool isCombo = spellName.Length > firstGesture.Length;
+        string secondGesture = isCombo ? spellName.Substring(firstGesture.Length) : "None";
+
+        // ⭐ 詳細的形狀判定 LOG
+        Debug.Log($"========== [招式判定結果] ==========");
+        Debug.Log($"原始招式名稱: {spellName}");
+        Debug.Log($"招式類型: {(isCombo ? "連體技" : "單招")}");
+        Debug.Log($"第一個圖形: {firstGesture}");
+        if (isCombo)
+        {
+            Debug.Log($"第二個圖形: {secondGesture}");
+        }
+        Debug.Log($"使用特效: {GetFxPrefabForSpell(firstGesture)?.name ?? "無特效"}");
+        Debug.Log($"====================================");
+
+        TriggerSpellFlash(firstGesture);
 
         if (playerActiveSpellText != null) playerActiveSpellText.text = $"目前施展：{spellName}";
 
-        // 生成對應特效
-        GameObject activeFxPrefab = GetFxPrefabForSpell(displaySpell);
+        // ⭐ 根據第一個圖形決定特效（單招或連體技都用相同特效）
+        GameObject activeFxPrefab = GetFxPrefabForSpell(firstGesture);
         StartCoroutine(SpellCooldownAnimationLoop());
 
         if (activeFxPrefab != null)
@@ -180,6 +203,12 @@ public class BattleManager : MonoBehaviour
             ParticleSystemRenderer psr = fx.GetComponent<ParticleSystemRenderer>();
             if (psr != null) { psr.sortingLayerName = "UI"; psr.sortingOrder = 1000; }
             Destroy(fx, spellCooldownDuration);
+
+            Debug.Log($"[特效播放] 根據第一個圖形 '{firstGesture}' 播放特效 (招式: {spellName})");
+        }
+        else
+        {
+            Debug.LogWarning($"[警告] 找不到特效 Prefab for {firstGesture}");
         }
 
         // 🎯 檢查所有正在出招的敵人
@@ -209,15 +238,31 @@ public class BattleManager : MonoBehaviour
     }
 
     /// <summary>
-    /// 根據招式名稱獲取對應的特效 Prefab
+    /// ⭐ 改進：根據第一個招式取得特效（不分單招/連體技）
+    /// 單招和連體技使用相同的特效
     /// </summary>
-    private GameObject GetFxPrefabForSpell(string spellName)
+    private GameObject GetFxPrefabForSpell(string firstGesture)
     {
-        return spellName switch
+        return firstGesture switch
         {
-            "Circle" => fxCirclePrefab,
-            "Square" => fxSquarePrefab,
-            "Triangle" => fxTrianglePrefab,
+            "Circle" => fxCirclePrefab,      // Circle 單招或 Circle 開頭的連體技
+            "Square" => fxSquarePrefab,      // Square 單招或 Square 開頭的連體技
+            "Triangle" => fxTrianglePrefab,  // Triangle 單招或 Triangle 開頭的連體技
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// 根據第一個招式取得連體技特效（可選，目前未使用）
+    /// 如果要為連體技設定獨立的特效，可以呼叫這個方法
+    /// </summary>
+    private GameObject GetComboFxPrefabForSpell(string firstGesture)
+    {
+        return firstGesture switch
+        {
+            "Circle" => fxCircleCombo,      // ⭐ Circle 開頭的連體技特效
+            "Square" => fxSquareCombo,      // ⭐ Square 開頭的連體技特效
+            "Triangle" => fxTriangleCombo,  // ⭐ Triangle 開頭的連體技特效
             _ => null
         };
     }

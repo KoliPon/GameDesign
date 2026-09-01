@@ -33,6 +33,9 @@ public class UDPReceiver : MonoBehaviour
     [SerializeField] private float angularDistanceWeight = 1.0f;
     [SerializeField] private bool useStrokeSpeedAnalysis = true;
 
+    [Header("=== Vision 融合 ===")]
+    [SerializeField] private bool useVisionFusion = true;
+
     private Thread receiveThread;
     private UdpClient client;
     private ConcurrentQueue<string> receiveQueue = new ConcurrentQueue<string>();
@@ -56,6 +59,8 @@ public class UDPReceiver : MonoBehaviour
     private float lastMX = 0f;
     private float lastMY = 0f;
     private float lastMZ = 0f;
+    private float lastGValue = 0f;
+    private float lastRawGValue = 0f;
 
     void Awake()
     {
@@ -76,6 +81,11 @@ public class UDPReceiver : MonoBehaviour
     {
         InitializeTemplates();
         ClearLineImmediate();
+
+        if (drawingArea == null)
+            Debug.LogError("[Serial] ❌ drawingArea 沒有指定!");
+        if (uiLineRenderer == null)
+            Debug.LogError("[Serial] ❌ uiLineRenderer 沒有指定!");
 
         Debug.Log($"[UDP] 檢查 Python 是否在運行: {IsPythonRunning()}");
 
@@ -196,6 +206,8 @@ public class UDPReceiver : MonoBehaviour
             lastMZ = float.Parse(parts[8]);
 
             float gForce = Mathf.Sqrt(lastAX * lastAX + lastAY * lastAY + lastAZ * lastAZ);
+            lastRawGValue = gForce;
+            lastGValue = gForce;
 
             if (!isRecording && gForce > gThreshold)
             {
@@ -311,45 +323,41 @@ public class UDPReceiver : MonoBehaviour
         return smoothed;
     }
 
-    private void EndDrawingAndRecognize()
+    public void EndDrawingAndRecognize()
     {
         isRecording = false;
 
-        Debug.Log($"[Arduino] 記錄結束，軌跡點數: {currentTrajectory.Count}, 顯示軌跡點數: {displayTrajectory.Count}");
+        Debug.Log($"[Arduino] 記錄結束，軌跡點數: {currentTrajectory.Count}");
 
         if (currentTrajectory.Count > 15)
         {
-            float score = 0f;
-
-            // ⭐ 用原始軌跡給 GestureChain 顯示
             List<Vector2> displayCopy = new List<Vector2>(displayTrajectory);
-
-            Debug.Log($"[Arduino] 傳送顯示軌跡給 GestureChain，點數: {displayCopy.Count}");
-
             List<Vector2> resampledTrajectory = ResampleTrajectory(currentTrajectory, resamplePointCount);
             List<Vector2> smoothedTrajectory = GetSmoothedTrajectory(resampledTrajectory);
 
-            string result = ClassifyGestureWithImprovedLogic(smoothedTrajectory, out score);
-
-            GestureChain gestureChain = FindObjectOfType<GestureChain>();
-            if (gestureChain != null)
+            // ⭐ 呼叫 Fusion
+            SensorFusionManager fusionManager = FindObjectOfType<SensorFusionManager>();
+            if (fusionManager != null)
             {
-                Debug.Log($"[Arduino] 找到 GestureChain，呼叫 RecognizeGesture");
-                // ⭐ 傳原始軌跡用於顯示
-                gestureChain.RecognizeGesture(smoothedTrajectory, displayCopy);
+                Debug.Log($"[Arduino] ✓ 呼叫 SensorFusionManager");
+                fusionManager.OnIMUGestureDetected(
+                    smoothedTrajectory,
+                    startRecordingTime,
+                    Time.time
+                );
             }
             else
             {
-                Debug.LogError("[ERROR] 找不到 GestureChain!");
+                Debug.LogError("[Arduino] ❌ 找不到 SensorFusionManager");
             }
+
+            displayTrajectory.Clear();
+            StartCoroutine(ClearLineDelayed(0.6f));
         }
         else
         {
-            Debug.Log($"[Arduino] 軌跡點數不足: {currentTrajectory.Count} < 15");
+            Debug.Log($"[Arduino] ⚠ 軌跡點數不足: {currentTrajectory.Count} < 15");
         }
-
-        displayTrajectory.Clear();  // ⭐ 清空
-        StartCoroutine(ClearLineDelayed(0.6f));
     }
     public List<Vector2> GetDisplayTrajectory()
     {
@@ -399,43 +407,113 @@ public class UDPReceiver : MonoBehaviour
         score = 0f;
 
         string baseResult = OneDollarRecognizer.Classify(points, templates, out float baseScore);
-
         float circleRoundness = AnalyzeRoundness(points);
         float squareAngularity = AnalyzeAngularity(points);
-
+        float triangleSharpness = AnalyzeTriangleSharpness(points);
         float aspectRatio = AnalyzeAspectRatio(points);
 
-        Debug.Log($"基礎辨識: {baseResult} ({baseScore:F2}), 圓度: {circleRoundness:F2}, 角度: {squareAngularity:F2}, 長寬比: {aspectRatio:F2}");
+        // ⭐ 改進：更寬鬆的判定邏輯
 
-        if (baseResult == "Circle" && baseScore > 0.55f)
+        // 1. 圓形判定（最圓）
+        if (circleRoundness > 0.65f)  // 改：0.72 → 0.65
         {
-            score = Mathf.Lerp(baseScore, circleRoundness, 0.3f);
-            return "Circle";
-        }
-        else if (baseResult == "Square" && baseScore > 0.55f)
-        {
-            score = Mathf.Lerp(baseScore, squareAngularity, 0.3f);
-            return "Square";
-        }
-        else if (baseResult == "Triangle" && baseScore > 0.55f)
-        {
-            score = baseScore;
-            return "Triangle";
+            if (circleRoundness > squareAngularity && circleRoundness > triangleSharpness)
+            {
+                score = circleRoundness;
+                Debug.Log($"✓ Circle (圓度: {circleRoundness:F3})");
+                return "Circle";
+            }
         }
 
-        if (circleRoundness > 0.75f && circleRoundness > squareAngularity && circleRoundness > 0.6f)
+        // 2. 三角形判定（最尖銳）
+        if (triangleSharpness > 0.55f)  // 改：0.62 → 0.55
         {
-            score = circleRoundness;
-            return "Circle";
+            if (triangleSharpness > circleRoundness && triangleSharpness > squareAngularity)
+            {
+                score = triangleSharpness;
+                Debug.Log($"✓ Triangle (尖銳度: {triangleSharpness:F3})");
+                return "Triangle";
+            }
         }
-        else if (squareAngularity > 0.7f && squareAngularity > circleRoundness && aspectRatio > 0.7f)
+
+        // 3. 正方形判定（最有角）
+        if (squareAngularity > 0.60f && aspectRatio > 0.65f)  // 改低要求
         {
             score = squareAngularity;
+            Debug.Log($"✓ Square (角度: {squareAngularity:F3}, 長寬比: {aspectRatio:F3})");
             return "Square";
         }
 
-        score = baseScore;
-        return baseResult;
+        // 4. One Dollar 備選
+        if (baseScore > 0.50f)  // 改：0.58 → 0.50
+        {
+            score = baseScore;
+            Debug.Log($"✓ {baseResult} (One Dollar: {baseScore:F3})");
+            return baseResult;
+        }
+
+        // 5. 都不確定，用最高信度
+        string[] results = { "Circle", "Square", "Triangle" };
+        float[] scores = { circleRoundness, squareAngularity, triangleSharpness };
+
+        int maxIndex = 0;
+        for (int i = 1; i < scores.Length; i++)
+        {
+            if (scores[i] > scores[maxIndex]) maxIndex = i;
+        }
+
+        score = scores[maxIndex];
+        Debug.Log($"⚠ 備選: {results[maxIndex]} (信度: {score:F3})");
+        return results[maxIndex];
+    }
+
+    private float AnalyzeTriangleSharpness(List<Vector2> points)
+    {
+        if (points.Count < 5) return 0f;
+
+        // 採樣均勻的點（避免噪聲）
+        List<Vector2> sampledPoints = new List<Vector2>();
+        int sampleStep = Mathf.Max(1, points.Count / 20);  // 採樣 20 個點
+        for (int i = 0; i < points.Count; i += sampleStep)
+        {
+            sampledPoints.Add(points[i]);
+        }
+
+        if (sampledPoints.Count < 3) return 0f;
+
+        int sharpCorners = 0;
+        float totalAngle = 0f;
+        int angleCount = 0;
+
+        // 檢查轉折點的銳利度
+        for (int i = 1; i < sampledPoints.Count - 1; i++)
+        {
+            Vector2 v1 = (sampledPoints[i] - sampledPoints[i - 1]).normalized;
+            Vector2 v2 = (sampledPoints[i + 1] - sampledPoints[i]).normalized;
+
+            float angle = Vector2.Angle(v1, v2);
+            angleCount++;
+
+            // 銳角（> 70°）
+            if (angle > 70f)
+            {
+                sharpCorners++;
+                totalAngle += angle;
+            }
+        }
+
+        if (angleCount == 0) return 0f;
+
+        // 三角形應該有 3 個明顯的銳角
+        float cornerRatio = Mathf.Clamp01(sharpCorners / 3f);
+        float avgAngle = totalAngle / Mathf.Max(1, sharpCorners);
+        float angleSharpness = Mathf.Clamp01((avgAngle - 70f) / 90f);  // 70~160° 映射到 0~1
+
+        float sharpness = Mathf.Lerp(cornerRatio, angleSharpness, 0.6f);
+
+        Debug.Log($"[三角檢測] 銳角數: {sharpCorners}/3, 平均角度: {avgAngle:F1}°, 尖銳度: {sharpness:F2}");
+
+        return Mathf.Clamp01(sharpness);
     }
 
     private float AnalyzeRoundness(List<Vector2> points)
@@ -480,26 +558,49 @@ public class UDPReceiver : MonoBehaviour
 
     private float AnalyzeAngularity(List<Vector2> points)
     {
-        if (points.Count < 3) return 0f;
+        if (points.Count < 5) return 0f;
+
+        // 採樣均勻的點
+        List<Vector2> sampledPoints = new List<Vector2>();
+        int sampleStep = Mathf.Max(1, points.Count / 16);  // 採樣 16 個點
+        for (int i = 0; i < points.Count; i += sampleStep)
+        {
+            sampledPoints.Add(points[i]);
+        }
+
+        if (sampledPoints.Count < 4) return 0f;
 
         int sharpAngles = 0;
         float totalAngleChange = 0f;
+        int angleCount = 0;
 
-        for (int i = 1; i < points.Count - 1; i++)
+        for (int i = 1; i < sampledPoints.Count - 1; i++)
         {
-            Vector2 v1 = (points[i] - points[i - 1]).normalized;
-            Vector2 v2 = (points[i + 1] - points[i]).normalized;
+            Vector2 v1 = (sampledPoints[i] - sampledPoints[i - 1]).normalized;
+            Vector2 v2 = (sampledPoints[i + 1] - sampledPoints[i]).normalized;
 
             float angle = Vector2.Angle(v1, v2);
             totalAngleChange += angle;
+            angleCount++;
 
-            if (angle > 45f)
+            // 檢測 60~120° 的角（正方形的角通常在 80~100°）
+            if (angle > 60f && angle < 130f)
             {
                 sharpAngles++;
             }
         }
 
-        float angularity = (sharpAngles / 4f) * (totalAngleChange / 360f);
+        if (angleCount == 0) return 0f;
+
+        // 正方形應該有約 4 個轉折角
+        float cornerRatio = Mathf.Clamp01(sharpAngles / 4f);
+        float avgAngle = totalAngleChange / angleCount;
+        float angleConsistency = 1f - Mathf.Abs((avgAngle - 90f) / 90f);  // 越接近 90° 越好
+
+        float angularity = Mathf.Lerp(cornerRatio, angleConsistency, 0.5f);
+
+        Debug.Log($"[角度檢測] 轉折數: {sharpAngles}/4, 平均角度: {avgAngle:F1}°, 角度性: {angularity:F2}");
+
         return Mathf.Clamp01(angularity);
     }
 
@@ -578,17 +679,16 @@ public class UDPReceiver : MonoBehaviour
         try
         {
             Debug.Log($"[UDP] 開始監聽 UDP 端口 {port}");
-            Debug.Log($"[UDP] 綁定到 IPAddress.Any:{port}");
 
             client = new UdpClient();
             client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 
-            // ⭐ 改這裡：嘗試綁定到 127.0.0.1（本地回環）
-            IPEndPoint bindPoint = new IPEndPoint(IPAddress.Parse("127.0.0.1"), port);
+            // ⭐ 改：用 IPAddress.Any 而不是 127.0.0.1
+            IPEndPoint bindPoint = new IPEndPoint(IPAddress.Any, port);
             client.Client.Bind(bindPoint);
             client.Client.ReceiveTimeout = 1000;
 
-            Debug.Log($"[UDP] ✓ 已成功綁定到 127.0.0.1:{port}");
+            Debug.Log($"[UDP] ✓ 已成功綁定到 0.0.0.0:{port}");
 
             int packetCount = 0;
 
@@ -604,15 +704,14 @@ public class UDPReceiver : MonoBehaviour
                         string cleanText = Encoding.UTF8.GetString(data).Trim();
                         receiveQueue.Enqueue(cleanText);
 
-                        if (packetCount % 100 == 0)  // 每 100 個包打一次 log
+                        if (packetCount <= 5 || packetCount % 100 == 0)
                         {
-                            Debug.Log($"[UDP] 已接收 {packetCount} 個數據包，最新: {cleanText.Substring(0, Mathf.Min(30, cleanText.Length))}");
+                            Debug.Log($"[UDP] 已接收 {packetCount} 個數據包，最新: {cleanText.Substring(0, Mathf.Min(50, cleanText.Length))}");
                         }
                     }
                 }
                 catch (SocketException ex)
                 {
-                    // Timeout 是正常的，不輸出
                     if (ex.SocketErrorCode != SocketError.TimedOut)
                     {
                         Debug.LogError($"[UDP] Socket 錯誤: {ex.Message}");
@@ -647,6 +746,31 @@ public class UDPReceiver : MonoBehaviour
             currentTrajectory.Add(localPoint);
             UpdateRealTimeLineRenderer();
         }
+    }
+    public void StartRecording()
+    {
+        if (!isRecording)
+        {
+            isRecording = true;
+            startRecordingTime = Time.time;
+            currentTrajectory.Clear();
+            displayTrajectory.Clear();
+            virtualCursor = Vector2.zero;
+            Debug.Log($"[UDP] 開始記錄");
+        }
+    }
+
+    public void FinishGesture()
+    {
+        if (isRecording)
+        {
+            EndDrawingAndRecognize();
+        }
+    }
+
+    public float GetCurrentGValue()
+    {
+        return lastGValue;
     }
 
     public void TriggerRecognition()

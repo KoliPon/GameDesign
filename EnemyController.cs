@@ -3,10 +3,6 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 
-/// <summary>
-/// 敵人控制器 - 直接讀取 Live2D 組件
-/// 無需 EnemyConfigSO，參數在此腳本中設定
-/// </summary>
 public class EnemyController : MonoBehaviour
 {
     [Header("== 敵人基本資訊 ==")]
@@ -20,10 +16,14 @@ public class EnemyController : MonoBehaviour
     [SerializeField] private float attackWindow = 3.5f;
 
     [Header("== 特效 Prefabs ==")]
-    [SerializeField] private GameObject cooldownCirclePrefab;
-    [SerializeField] private GameObject cooldownSquarePrefab;
-    [SerializeField] private GameObject cooldownTrianglePrefab;
+    [SerializeField] private GameObject glowCircleParticlePrefab;
+    [SerializeField] private GameObject glowSquareParticlePrefab;
+    [SerializeField] private GameObject glowTriangleParticlePrefab;
     [SerializeField] private GameObject enemyDeathParticlePrefab;
+
+    [Header("== 粒子效果設定 ==")]
+    [SerializeField] private Vector3 glowOffset = Vector3.zero;
+    [SerializeField] private float glowScale = 1.0f;
 
     [Header("== 敵人特殊行為 ==")]
     [SerializeField] private bool useRandomSpells = true;
@@ -34,13 +34,16 @@ public class EnemyController : MonoBehaviour
     private CanvasGroup canvasGroup;
     private ImageJuiceUi enemyHurtJuice;
 
+    // ⭐ 粒子系統實例
+    private GameObject currentGlowParticles;
+    private ParticleSystem currentParticleSystem;
+
     // 戰鬥狀態
     private int currentHealth;
     private bool isCharging = false;
     private string requiredSpellToBreak = "Circle";
-    private GameObject currentVisualCircle;
     private Coroutine chargeTimerCoroutine;
-    private Coroutine shrinkCoroutine;
+    private Coroutine glowControlCoroutine;
     private Transform canvasParent;
 
     // 事件
@@ -51,7 +54,6 @@ public class EnemyController : MonoBehaviour
 
     void Start()
     {
-        // ⭐ 自動讀取組件
         InitializeComponents();
 
         currentHealth = maxHealth;
@@ -61,37 +63,30 @@ public class EnemyController : MonoBehaviour
         Debug.Log($"  - Animator: {(animator != null ? "✓" : "✗")}");
         Debug.Log($"  - CanvasGroup: {(canvasGroup != null ? "✓" : "✗")}");
         Debug.Log($"  - ImageJuiceUi: {(enemyHurtJuice != null ? "✓" : "✗")}");
+        Debug.Log($"  - 粒子縮放: {glowScale}x");
         Debug.Log($"  - 血量: {currentHealth}");
 
         StartCoroutine(EnemyAILoop());
     }
 
-    /// <summary>
-    /// ⭐ 自動讀取 Live2D 上的所有必要組件
-    /// </summary>
     private void InitializeComponents()
     {
-        // 1. 讀取 Animator（Live2D 的動畫控制器）
+        // 1. 讀取 Animator
         animator = GetComponent<Animator>();
         if (animator == null)
         {
             Debug.LogWarning($"敵人 {enemyID}: 找不到 Animator 組件！");
         }
 
-        // 2. 讀取或新增 CanvasGroup（用於淡出效果）
+        // 2. 讀取或新增 CanvasGroup
         canvasGroup = GetComponent<CanvasGroup>();
         if (canvasGroup == null)
         {
             canvasGroup = gameObject.AddComponent<CanvasGroup>();
-            Debug.Log($"敵人 {enemyID}: 已自動新增 CanvasGroup");
         }
 
-        // 3. 讀取 ImageJuiceUi（受傷特效）
+        // 3. 讀取 ImageJuiceUi
         enemyHurtJuice = GetComponent<ImageJuiceUi>();
-        if (enemyHurtJuice == null)
-        {
-            Debug.LogWarning($"敵人 {enemyID}: 找不到 ImageJuiceUi 組件（可選）");
-        }
     }
 
     IEnumerator EnemyAILoop()
@@ -121,7 +116,6 @@ public class EnemyController : MonoBehaviour
             }
 
             StopEnemyCoroutines();
-            ClearVisualCircle();
 
             if (currentHealth <= 0) break;
 
@@ -134,24 +128,15 @@ public class EnemyController : MonoBehaviour
     {
         Debug.Log($"敵人 {enemyID} 出招，請施展 {requiredSpellToBreak} 打斷");
 
-        // ⭐ 敵人進入出招狀態，播放 standby 動畫
         if (animator != null)
         {
-            animator.SetBool("IsCharging", true);  // 進入備戰狀態
+            animator.SetBool("IsCharging", true);
         }
 
-        GameObject prefabToSpawn = GetPrefabForSpell(requiredSpellToBreak);
-
-        if (prefabToSpawn != null && canvasParent != null)
-        {
-            currentVisualCircle = Instantiate(prefabToSpawn, canvasParent);
-            RectTransform rectTrans = currentVisualCircle.GetComponent<RectTransform>();
-            if (rectTrans != null)
-            {
-                rectTrans.anchoredPosition = Vector2.zero;
-            }
-            shrinkCoroutine = StartCoroutine(AnimateCircleShrink(currentVisualCircle, attackWindow));
-        }
+        // ⭐ 啟動粒子系統
+        if (glowControlCoroutine != null)
+            StopCoroutine(glowControlCoroutine);
+        glowControlCoroutine = StartCoroutine(ControlCustomGlowParticles(requiredSpellToBreak, attackWindow));
 
         yield return new WaitForSeconds(attackWindow);
 
@@ -159,38 +144,85 @@ public class EnemyController : MonoBehaviour
         {
             isCharging = false;
 
-            // ⭐ 攻擊動畫觸發
             if (animator != null)
             {
                 animator.SetTrigger("Punch");
-                animator.SetBool("IsCharging", false);  // 結束備戰狀態
+                animator.SetBool("IsCharging", false);
+            }
+
+            // 停止粒子系統
+            if (currentParticleSystem != null)
+            {
+                currentParticleSystem.Stop();
             }
 
             OnEnemyCharged?.Invoke(enemyID);
         }
     }
 
-    IEnumerator AnimateCircleShrink(GameObject circleObj, float duration)
+    /// <summary>
+    /// ⭐ 控制粒子系統
+    /// </summary>
+    IEnumerator ControlCustomGlowParticles(string spellName, float duration)
     {
-        Image fillImage = circleObj.GetComponent<Image>();
-        RectTransform rectTransform = circleObj.GetComponent<RectTransform>();
+        GameObject particlePrefab = GetGlowParticlePrefab(spellName);
+
+        if (particlePrefab == null)
+        {
+            Debug.LogWarning($"❌ 敵人 {enemyID}: 找不到 {spellName} 的粒子 Prefab");
+            yield break;
+        }
+
+        // 實例化粒子
+        currentGlowParticles = Instantiate(particlePrefab, transform.position + glowOffset, Quaternion.identity, transform);
+        currentGlowParticles.transform.localScale = Vector3.one * glowScale;
+
+        currentParticleSystem = currentGlowParticles.GetComponent<ParticleSystem>();
+
+        if (currentParticleSystem == null)
+        {
+            Debug.LogError($"❌ 敵人 {enemyID}: 粒子 Prefab 沒有 ParticleSystem 組件");
+            Destroy(currentGlowParticles);
+            yield break;
+        }
+
+        // 啟動粒子系統
+        currentParticleSystem.Play();
+        Debug.Log($"✓ 敵人 {enemyID}: 播放 {spellName} 粒子效果 (縮放: {glowScale}x)");
+
         float elapsed = 0f;
-        Vector3 initialScale = Vector3.one * 2.5f;
-        Vector3 targetScale = Vector3.one * 0.6f;
-        Color startColor = new Color(0.5f, 0.5f, 0.5f, 1.0f);
-        Color endColor = new Color(1.0f, 0.0f, 0.0f, 1.0f);
-
-        if (rectTransform != null) rectTransform.localScale = initialScale;
-        if (fillImage != null) fillImage.color = startColor;
-
-        while (elapsed < duration && fillImage != null && isCharging)
+        while (elapsed < duration && isCharging)
         {
             elapsed += Time.deltaTime;
-            float t = elapsed / duration;
-            if (rectTransform != null) rectTransform.localScale = Vector3.Lerp(initialScale, targetScale, t);
-            if (fillImage != null) fillImage.color = Color.Lerp(startColor, endColor, t);
             yield return null;
         }
+
+        // 停止粒子系統
+        if (currentParticleSystem != null)
+        {
+            currentParticleSystem.Stop();
+        }
+
+        // 清除粒子物體
+        yield return new WaitForSeconds(2f);
+        if (currentGlowParticles != null)
+        {
+            Destroy(currentGlowParticles);
+        }
+    }
+
+    /// <summary>
+    /// 根據招式名稱獲取對應的粒子 Prefab
+    /// </summary>
+    private GameObject GetGlowParticlePrefab(string spellName)
+    {
+        return spellName switch
+        {
+            "Circle" => glowCircleParticlePrefab,
+            "Square" => glowSquareParticlePrefab,
+            "Triangle" => glowTriangleParticlePrefab,
+            _ => null
+        };
     }
 
     public bool TakeSpellDamage(string playerSpell)
@@ -211,13 +243,11 @@ public class EnemyController : MonoBehaviour
         currentHealth--;
         Debug.Log($"敵人 {enemyID} 受傷！剩餘血量: {currentHealth}");
 
-        // 播放受傷特效
         if (enemyHurtJuice != null)
         {
             enemyHurtJuice.PlayShake();
         }
 
-        // ⭐ 觸發 Live2D 受傷動畫
         if (animator != null)
         {
             animator.SetTrigger("Hurt");
@@ -236,7 +266,6 @@ public class EnemyController : MonoBehaviour
         StopEnemyCoroutines();
         OnEnemyDefeated?.Invoke(enemyID);
 
-        // 播放死亡特效
         if (enemyDeathParticlePrefab != null)
         {
             GameObject deathFX = Instantiate(
@@ -248,7 +277,6 @@ public class EnemyController : MonoBehaviour
             Destroy(deathFX, 3f);
         }
 
-        // 淡出敵人
         StartCoroutine(FadeOutEnemy());
     }
 
@@ -257,7 +285,6 @@ public class EnemyController : MonoBehaviour
         float duration = 1.5f;
         float elapsed = 0f;
 
-        // ⭐ 使用 CanvasGroup 控制透明度
         if (canvasGroup != null)
         {
             while (elapsed < duration)
@@ -276,10 +303,10 @@ public class EnemyController : MonoBehaviour
     {
         return spellName switch
         {
-            "Circle" => cooldownCirclePrefab,
-            "Square" => cooldownSquarePrefab,
-            "Triangle" => cooldownTrianglePrefab,
-            _ => cooldownCirclePrefab
+            "Circle" => glowCircleParticlePrefab,
+            "Square" => glowSquareParticlePrefab,
+            "Triangle" => glowTriangleParticlePrefab,
+            _ => null
         };
     }
 
@@ -290,20 +317,10 @@ public class EnemyController : MonoBehaviour
             StopCoroutine(chargeTimerCoroutine);
             chargeTimerCoroutine = null;
         }
-        if (shrinkCoroutine != null)
+        if (glowControlCoroutine != null)
         {
-            StopCoroutine(shrinkCoroutine);
-            shrinkCoroutine = null;
-        }
-    }
-
-    private void ClearVisualCircle()
-    {
-        if (currentVisualCircle != null)
-        {
-            currentVisualCircle.SetActive(false);
-            Destroy(currentVisualCircle);
-            currentVisualCircle = null;
+            StopCoroutine(glowControlCoroutine);
+            glowControlCoroutine = null;
         }
     }
 
@@ -311,5 +328,8 @@ public class EnemyController : MonoBehaviour
     public bool IsCharging() => isCharging;
     public int GetEnemyID() => enemyID;
 
-    void OnDestroy() { StopAllCoroutines(); }
+    void OnDestroy()
+    {
+        StopAllCoroutines();
+    }
 }
