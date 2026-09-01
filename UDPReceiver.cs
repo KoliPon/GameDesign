@@ -249,11 +249,11 @@ public class UDPReceiver : MonoBehaviour
             {
                 // ⭐ 新增：加速度突變視為噪聲，過濾該筆數據避免手抖誤記錄
                 float gForceDelta = Mathf.Abs(gForce - lastGForceForAccelCheck);
-                lastGForceForAccelCheck = gForce;
                 if (gForceDelta > maxGForceDelta)
                 {
                     return;
                 }
+                lastGForceForAccelCheck = gForce;
 
                 // ⭐ 改進：使用更高的採樣率
                 float horizontalInput = -lastGZ;
