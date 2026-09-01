@@ -1,10 +1,9 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 public class IMUGestureDetector : MonoBehaviour
 {
-    [Header("== IMU 手勢偵測 ==")]
-    [SerializeField] private float gThreshold = 0.7f;  // ⭐ 改：降低閾值，更容易觸發
-    [SerializeField] private int minFramesToStart = 5;      // ⭐ 改：10 → 5（更快開始）
+    [SerializeField] private float gThreshold = 0.9f;  // ⭐ 改：提高閾值，降低誤觸發
+    [SerializeField] private int minFramesToStart = 8;      // ⭐ 改：5 → 8（觸發條件更嚴格）
     [SerializeField] private int minFramesToEnd = 60;       // ⭐ 改：25 → 60（不易中斷）
     [SerializeField] private float recordDuration = 3.0f;   // ⭐ 改：2.0 → 3.0（更寬鬆）
 
