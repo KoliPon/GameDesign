@@ -55,7 +55,6 @@ public class UDPReceiver : MonoBehaviour
     private List<Vector2> currentTrajectory = new List<Vector2>();
     private List<OneDollarRecognizer.GestureTemplate> templates = new List<OneDollarRecognizer.GestureTemplate>();
     private bool isRecording = false;
-    private bool isInCooldown = false;
     private float startRecordingTime = 0f;
     private Vector2 virtualCursor = Vector2.zero;
     private Vector2 lastRecordedPosition = Vector2.zero;
@@ -99,6 +98,16 @@ public class UDPReceiver : MonoBehaviour
         if (uiLineRenderer == null)
             Debug.LogError("[Serial] ❌ uiLineRenderer 沒有指定!");
 
+        // ⭐ 在 Start 時取得一次 GestureChain 參考
+        if (gestureChain == null)
+        {
+            gestureChain = FindAnyObjectByType<GestureChain>();
+            if (gestureChain != null)
+                Debug.Log("[UDP] ✓ 找到 GestureChain");
+            else
+                Debug.LogWarning("[UDP] ⚠ 暫時找不到 GestureChain (可能還未初始化)");
+        }
+
         Debug.Log($"[UDP] 檢查 Python 是否在運行: {IsPythonRunning()}");
 
         if (!IsPythonRunning())
@@ -123,9 +132,9 @@ public class UDPReceiver : MonoBehaviour
 
     void Update()
     {
-        FindManagers();
-        // ⭐ 【修正】每幀同步冷卻狀態，供 ProcessIMUString 使用
-        isInCooldown = gestureChain != null && gestureChain.IsInCooldown();
+        // ⭐ 如果 gestureChain 還沒找到，嘗試再次查找
+        if (gestureChain == null)
+            gestureChain = FindAnyObjectByType<GestureChain>();
 
         bool trajectoryChanged = false;
         int queueCount = 0;
@@ -133,13 +142,25 @@ public class UDPReceiver : MonoBehaviour
         while (receiveQueue.TryDequeue(out string incomingText))
         {
             queueCount++;
-            ProcessIMUString(incomingText);
-            trajectoryChanged = true;
+            
+            // ⭐ 只在非冷卻狀態下處理 UDP 數據
+            bool shouldProcess = true;
+            if (gestureChain != null && gestureChain.IsInCooldown())
+            {
+                shouldProcess = false;
+                Debug.Log($"[冷卻中] 忽略 UDP 數據 (cooldown active)");
+            }
+
+            if (shouldProcess)
+            {
+                ProcessIMUString(incomingText);
+                trajectoryChanged = true;
+            }
         }
 
         if (queueCount > 0)
         {
-            Debug.Log($"[UDP] 收到 {queueCount} 個數據包");
+            Debug.Log($"[UDP] 收到 {queueCount} 個數據包，已處理: {(queueCount > 0 && gestureChain != null && !gestureChain.IsInCooldown() ? "✓" : "✗")}");
         }
 
         if (isRecording)
@@ -157,14 +178,6 @@ public class UDPReceiver : MonoBehaviour
         {
             UpdateRealTimeLineRenderer();
         }
-    }
-
-    private void FindManagers()
-    {
-        if (battleManager == null) battleManager = BattleManager.Instance;
-        if (battleManager == null) battleManager = FindAnyObjectByType<BattleManager>();
-        if (tutorialManager == null) tutorialManager = FindAnyObjectByType<TutorialManager>();
-        if (gestureChain == null) gestureChain = FindAnyObjectByType<GestureChain>();
     }
 
     private void InitializeTemplates()
@@ -224,14 +237,6 @@ public class UDPReceiver : MonoBehaviour
             float gForce = Mathf.Sqrt(lastAX * lastAX + lastAY * lastAY + lastAZ * lastAZ);
             lastRawGValue = gForce;
             lastGValue = gForce;
-
-            // ⭐ 【修正】冷卻期間暫停軌跡記錄，避免攻擊動作殘留手抖被誤認為下一個手勢
-            if (isInCooldown)
-            {
-                lastGForceForAccelCheck = gForce;
-                Debug.Log($"[冷卻中] 忽略軌跡記錄 (G值: {gForce:F2})");
-                return;
-            }
 
             if (!isRecording && gForce > gThreshold)
             {
