@@ -17,6 +17,7 @@ public class UDPReceiver : MonoBehaviour
     [Header("=== 參照核心 ===")]
     public BattleManager battleManager;
     public TutorialManager tutorialManager;
+    public GestureChain gestureChain;
 
     [Header("=== 網路設定 ===")]
     public int port = 5065;
@@ -29,13 +30,17 @@ public class UDPReceiver : MonoBehaviour
     public float recordDuration = 1.5f;
 
     [Header("=== ⭐ 採樣點數優化設定 ===")]
-    [SerializeField] private float fixedIMUDt = 0.002f;  // ⭐ 改：0.01 → 0.002（5 倍採樣率）
-    [SerializeField] private int maxPointsPerUpdate = 5;  // ⭐ 新增：每幀最多插值幾個點
+    [SerializeField] private float fixedIMUDt = 0.002f;
+    [SerializeField] private int maxPointsPerUpdate = 5;
 
     [Header("=== 辨識精準度設定 ===")]
     [SerializeField] private int resamplePointCount = 64;
     [SerializeField] private float angularDistanceWeight = 1.0f;
     [SerializeField] private bool useStrokeSpeedAnalysis = true;
+
+    [Header("=== 防抖設定 ===")]
+    [SerializeField] private float minPointDistanceThreshold = 0.8f;
+    [SerializeField] private float maxGForceDelta = 3.0f;
 
     [Header("=== Vision 融合 ===")]
     [SerializeField] private bool useVisionFusion = true;
@@ -50,11 +55,13 @@ public class UDPReceiver : MonoBehaviour
     private List<Vector2> currentTrajectory = new List<Vector2>();
     private List<OneDollarRecognizer.GestureTemplate> templates = new List<OneDollarRecognizer.GestureTemplate>();
     private bool isRecording = false;
+    private bool isInCooldown = false;
     private float startRecordingTime = 0f;
     private Vector2 virtualCursor = Vector2.zero;
-    private Vector2 lastRecordedPosition = Vector2.zero;  // ⭐ 新增：追蹤上次記錄的位置
+    private Vector2 lastRecordedPosition = Vector2.zero;
+    private float lastGForceForAccelCheck = 0f;
 
-    // ⭐ 新增：9 軸感測器數據
+    // 9 軸感測器數據
     private float lastGX = 0f;
     private float lastGY = 0f;
     private float lastGZ = 0f;
@@ -117,6 +124,8 @@ public class UDPReceiver : MonoBehaviour
     void Update()
     {
         FindManagers();
+        // ⭐ 【修正】每幀同步冷卻狀態，供 ProcessIMUString 使用
+        isInCooldown = gestureChain != null && gestureChain.IsInCooldown();
 
         bool trajectoryChanged = false;
         int queueCount = 0;
@@ -155,6 +164,7 @@ public class UDPReceiver : MonoBehaviour
         if (battleManager == null) battleManager = BattleManager.Instance;
         if (battleManager == null) battleManager = FindAnyObjectByType<BattleManager>();
         if (tutorialManager == null) tutorialManager = FindAnyObjectByType<TutorialManager>();
+        if (gestureChain == null) gestureChain = FindAnyObjectByType<GestureChain>();
     }
 
     private void InitializeTemplates()
@@ -192,7 +202,7 @@ public class UDPReceiver : MonoBehaviour
         templates.Add(new OneDollarRecognizer.GestureTemplate("Triangle", triangle));
     }
 
-    private List<Vector2> displayTrajectory = new List<Vector2>();  // ⭐ 確保有宣告
+    private List<Vector2> displayTrajectory = new List<Vector2>();
 
     private void ProcessIMUString(string dataStr)
     {
@@ -215,34 +225,52 @@ public class UDPReceiver : MonoBehaviour
             lastRawGValue = gForce;
             lastGValue = gForce;
 
+            // ⭐ 【修正】冷卻期間暫停軌跡記錄，避免攻擊動作殘留手抖被誤認為下一個手勢
+            if (isInCooldown)
+            {
+                lastGForceForAccelCheck = gForce;
+                Debug.Log($"[冷卻中] 忽略軌跡記錄 (G值: {gForce:F2})");
+                return;
+            }
+
             if (!isRecording && gForce > gThreshold)
             {
                 isRecording = true;
                 startRecordingTime = Time.time;
                 currentTrajectory.Clear();
-                displayTrajectory.Clear();  // ⭐ 新增：清空顯示軌跡
+                displayTrajectory.Clear();
                 virtualCursor = Vector2.zero;
-                lastRecordedPosition = Vector2.zero;  // ⭐ 新增：初始化上次位置
-                Debug.Log($"[Arduino] 開始記錄");  // ⭐ 新增：debug log
+                lastRecordedPosition = Vector2.zero;
+                lastGForceForAccelCheck = gForce;
+                Debug.Log($"[Arduino] 開始記錄 (G值: {gForce:F2})");
             }
 
             if (isRecording)
             {
-                // ⭐ 改進：使用更高的採樣率
+                // ⭐ 新增：加速度突變視為噪聲，過濾該筆數據避免手抖誤記錄
+                float gForceDelta = Mathf.Abs(gForce - lastGForceForAccelCheck);
+
+                if (gForceDelta > maxGForceDelta)
+                {
+                    Debug.Log($"[防抖] 加速度突變過大，已過濾 (Delta: {gForceDelta:F2} > {maxGForceDelta})");
+                    return;
+                }
+
+                lastGForceForAccelCheck = gForce;
+
                 float horizontalInput = -lastGZ;
                 float verticalInput = lastGY;
 
                 virtualCursor.x += horizontalInput * sensitivity * fixedIMUDt;
                 virtualCursor.y += verticalInput * sensitivity * fixedIMUDt;
 
-                // ⭐ 新增：插值記錄多個點，使軌跡更完整
                 float distanceToLast = Vector2.Distance(virtualCursor, lastRecordedPosition);
-                
-                if (distanceToLast > 0.5f)  // 移動超過 0.5 像素才記錄
+
+                // ⭐ 新增：距離閾值過濾，相鄰點過近視為噪聲不記錄
+                if (distanceToLast > minPointDistanceThreshold)
                 {
-                    // 計算需要插值多少個點
-                    int pointsToAdd = Mathf.Max(1, Mathf.FloorToInt(distanceToLast / 0.5f));
-                    pointsToAdd = Mathf.Min(pointsToAdd, maxPointsPerUpdate);  // 限制最多插值點數
+                    int pointsToAdd = Mathf.Max(1, Mathf.FloorToInt(distanceToLast / minPointDistanceThreshold));
+                    pointsToAdd = Mathf.Min(pointsToAdd, maxPointsPerUpdate);
 
                     for (int i = 1; i <= pointsToAdd; i++)
                     {
@@ -264,7 +292,6 @@ public class UDPReceiver : MonoBehaviour
         if (uiLineRenderer == null || currentTrajectory.Count == 0 || drawingArea == null)
             return;
 
-        // ⭐ 改進：先進行高斯平滑
         List<Vector2> smoothedRaw = ApplyGaussianSmoothing(currentTrajectory);
         List<Vector2> renderPoints = GetSmoothedTrajectory(smoothedRaw);
 
@@ -313,17 +340,13 @@ public class UDPReceiver : MonoBehaviour
         return lastGY;
     }
 
-    /// <summary>
-    /// ⭐ 新增：高斯平滑（對抖動數據特別有效）
-    /// </summary>
     private List<Vector2> ApplyGaussianSmoothing(List<Vector2> input)
     {
         if (input.Count < 3) return new List<Vector2>(input);
 
         List<Vector2> smoothed = new List<Vector2>();
 
-        // 高斯核（3 點）
-        float[] kernel = { 0.25f, 0.5f, 0.25f };
+        float[] kernel = { 0.1f, 0.8f, 0.1f };
 
         for (int i = 0; i < input.Count; i++)
         {
@@ -359,7 +382,6 @@ public class UDPReceiver : MonoBehaviour
             List<Vector2> resampledTrajectory = ResampleTrajectory(currentTrajectory, resamplePointCount);
             List<Vector2> smoothedTrajectory = GetSmoothedTrajectory(resampledTrajectory);
 
-            // ⭐ 呼叫 Fusion
             SensorFusionManager fusionManager = FindObjectOfType<SensorFusionManager>();
             if (fusionManager != null)
             {
@@ -383,10 +405,12 @@ public class UDPReceiver : MonoBehaviour
             Debug.Log($"[Arduino] ⚠ 軌跡點數不足: {currentTrajectory.Count} < 15");
         }
     }
+
     public List<Vector2> GetDisplayTrajectory()
     {
         return new List<Vector2>(displayTrajectory);
     }
+
     private List<Vector2> ResampleTrajectory(List<Vector2> input, int targetPoints)
     {
         if (input.Count <= 2) return new List<Vector2>(input);
@@ -424,228 +448,6 @@ public class UDPReceiver : MonoBehaviour
         }
 
         return output;
-    }
-
-    private string ClassifyGestureWithImprovedLogic(List<Vector2> points, out float score)
-    {
-        score = 0f;
-
-        string baseResult = OneDollarRecognizer.Classify(points, templates, out float baseScore);
-        float circleRoundness = AnalyzeRoundness(points);
-        float squareAngularity = AnalyzeAngularity(points);
-        float triangleSharpness = AnalyzeTriangleSharpness(points);
-        float aspectRatio = AnalyzeAspectRatio(points);
-
-        // ⭐ 改進：更寬鬆的判定邏輯
-
-        // 1. 圓形判定（最圓）
-        if (circleRoundness > 0.65f)  // 改：0.72 → 0.65
-        {
-            if (circleRoundness > squareAngularity && circleRoundness > triangleSharpness)
-            {
-                score = circleRoundness;
-                Debug.Log($"✓ Circle (圓度: {circleRoundness:F3})");
-                return "Circle";
-            }
-        }
-
-        // 2. 三角形判定（最尖銳）
-        if (triangleSharpness > 0.55f)  // 改：0.62 → 0.55
-        {
-            if (triangleSharpness > circleRoundness && triangleSharpness > squareAngularity)
-            {
-                score = triangleSharpness;
-                Debug.Log($"✓ Triangle (尖銳度: {triangleSharpness:F3})");
-                return "Triangle";
-            }
-        }
-
-        // 3. 正方形判定（最有角）
-        if (squareAngularity > 0.60f && aspectRatio > 0.65f)  // 改低要求
-        {
-            score = squareAngularity;
-            Debug.Log($"✓ Square (角度: {squareAngularity:F3}, 長寬比: {aspectRatio:F3})");
-            return "Square";
-        }
-
-        // 4. One Dollar 備選
-        if (baseScore > 0.50f)  // 改：0.58 → 0.50
-        {
-            score = baseScore;
-            Debug.Log($"✓ {baseResult} (One Dollar: {baseScore:F3})");
-            return baseResult;
-        }
-
-        // 5. 都不確定，用最高信度
-        string[] results = { "Circle", "Square", "Triangle" };
-        float[] scores = { circleRoundness, squareAngularity, triangleSharpness };
-
-        int maxIndex = 0;
-        for (int i = 1; i < scores.Length; i++)
-        {
-            if (scores[i] > scores[maxIndex]) maxIndex = i;
-        }
-
-        score = scores[maxIndex];
-        Debug.Log($"⚠ 備選: {results[maxIndex]} (信度: {score:F3})");
-        return results[maxIndex];
-    }
-
-    private float AnalyzeTriangleSharpness(List<Vector2> points)
-    {
-        if (points.Count < 5) return 0f;
-
-        // 採樣均勻的點（避免噪聲）
-        List<Vector2> sampledPoints = new List<Vector2>();
-        int sampleStep = Mathf.Max(1, points.Count / 20);  // 採樣 20 個點
-        for (int i = 0; i < points.Count; i += sampleStep)
-        {
-            sampledPoints.Add(points[i]);
-        }
-
-        if (sampledPoints.Count < 3) return 0f;
-
-        int sharpCorners = 0;
-        float totalAngle = 0f;
-        int angleCount = 0;
-
-        // 檢查轉折點的銳利度
-        for (int i = 1; i < sampledPoints.Count - 1; i++)
-        {
-            Vector2 v1 = (sampledPoints[i] - sampledPoints[i - 1]).normalized;
-            Vector2 v2 = (sampledPoints[i + 1] - sampledPoints[i]).normalized;
-
-            float angle = Vector2.Angle(v1, v2);
-            angleCount++;
-
-            // 銳角（> 70°）
-            if (angle > 70f)
-            {
-                sharpCorners++;
-                totalAngle += angle;
-            }
-        }
-
-        if (angleCount == 0) return 0f;
-
-        // 三角形應該有 3 個明顯的銳角
-        float cornerRatio = Mathf.Clamp01(sharpCorners / 3f);
-        float avgAngle = totalAngle / Mathf.Max(1, sharpCorners);
-        float angleSharpness = Mathf.Clamp01((avgAngle - 70f) / 90f);  // 70~160° 映射到 0~1
-
-        float sharpness = Mathf.Lerp(cornerRatio, angleSharpness, 0.6f);
-
-        Debug.Log($"[三角檢測] 銳角數: {sharpCorners}/3, 平均角度: {avgAngle:F1}°, 尖銳度: {sharpness:F2}");
-
-        return Mathf.Clamp01(sharpness);
-    }
-
-    private float AnalyzeRoundness(List<Vector2> points)
-    {
-        float minX = float.MaxValue, maxX = float.MinValue;
-        float minY = float.MaxValue, maxY = float.MinValue;
-
-        foreach (var p in points)
-        {
-            minX = Mathf.Min(minX, p.x);
-            maxX = Mathf.Max(maxX, p.x);
-            minY = Mathf.Min(minY, p.y);
-            maxY = Mathf.Max(maxY, p.y);
-        }
-
-        float width = maxX - minX;
-        float height = maxY - minY;
-        if (width == 0 || height == 0) return 0f;
-
-        float aspectRatio = Mathf.Min(width, height) / Mathf.Max(width, height);
-
-        Vector2 center = new Vector2((minX + maxX) / 2f, (minY + maxY) / 2f);
-        float avgDistance = 0f;
-        float distanceVariance = 0f;
-
-        foreach (var p in points)
-        {
-            avgDistance += Vector2.Distance(p, center);
-        }
-        avgDistance /= points.Count;
-
-        foreach (var p in points)
-        {
-            float dist = Vector2.Distance(p, center);
-            distanceVariance += (dist - avgDistance) * (dist - avgDistance);
-        }
-        distanceVariance = Mathf.Sqrt(distanceVariance / points.Count);
-
-        float circularity = aspectRatio * (1f - Mathf.Clamp01(distanceVariance / avgDistance));
-        return Mathf.Clamp01(circularity);
-    }
-
-    private float AnalyzeAngularity(List<Vector2> points)
-    {
-        if (points.Count < 5) return 0f;
-
-        // 採樣均勻的點
-        List<Vector2> sampledPoints = new List<Vector2>();
-        int sampleStep = Mathf.Max(1, points.Count / 16);  // 採樣 16 個點
-        for (int i = 0; i < points.Count; i += sampleStep)
-        {
-            sampledPoints.Add(points[i]);
-        }
-
-        if (sampledPoints.Count < 4) return 0f;
-
-        int sharpAngles = 0;
-        float totalAngleChange = 0f;
-        int angleCount = 0;
-
-        for (int i = 1; i < sampledPoints.Count - 1; i++)
-        {
-            Vector2 v1 = (sampledPoints[i] - sampledPoints[i - 1]).normalized;
-            Vector2 v2 = (sampledPoints[i + 1] - sampledPoints[i]).normalized;
-
-            float angle = Vector2.Angle(v1, v2);
-            totalAngleChange += angle;
-            angleCount++;
-
-            // 檢測 60~120° 的角（正方形的角通常在 80~100°）
-            if (angle > 60f && angle < 130f)
-            {
-                sharpAngles++;
-            }
-        }
-
-        if (angleCount == 0) return 0f;
-
-        // 正方形應該有約 4 個轉折角
-        float cornerRatio = Mathf.Clamp01(sharpAngles / 4f);
-        float avgAngle = totalAngleChange / angleCount;
-        float angleConsistency = 1f - Mathf.Abs((avgAngle - 90f) / 90f);  // 越接近 90° 越好
-
-        float angularity = Mathf.Lerp(cornerRatio, angleConsistency, 0.5f);
-
-        Debug.Log($"[角度檢測] 轉折數: {sharpAngles}/4, 平均角度: {avgAngle:F1}°, 角度性: {angularity:F2}");
-
-        return Mathf.Clamp01(angularity);
-    }
-
-    private float AnalyzeAspectRatio(List<Vector2> points)
-    {
-        float minX = float.MaxValue, maxX = float.MinValue;
-        float minY = float.MaxValue, maxY = float.MinValue;
-
-        foreach (var p in points)
-        {
-            minX = Mathf.Min(minX, p.x);
-            maxX = Mathf.Max(maxX, p.x);
-            minY = Mathf.Min(minY, p.y);
-            maxY = Mathf.Max(maxY, p.y);
-        }
-
-        float width = maxX - minX;
-        float height = maxY - minY;
-        if (width == 0 || height == 0) return 0f;
-
-        return Mathf.Min(width, height) / Mathf.Max(width, height);
     }
 
     private List<Vector2> GetSmoothedTrajectory(List<Vector2> input)
@@ -707,7 +509,6 @@ public class UDPReceiver : MonoBehaviour
             client = new UdpClient();
             client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 
-            // ⭐ 改：用 IPAddress.Any 而不是 127.0.0.1
             IPEndPoint bindPoint = new IPEndPoint(IPAddress.Any, port);
             client.Client.Bind(bindPoint);
             client.Client.ReceiveTimeout = 1000;
@@ -771,6 +572,7 @@ public class UDPReceiver : MonoBehaviour
             UpdateRealTimeLineRenderer();
         }
     }
+
     public void StartRecording()
     {
         if (!isRecording)
@@ -780,7 +582,7 @@ public class UDPReceiver : MonoBehaviour
             currentTrajectory.Clear();
             displayTrajectory.Clear();
             virtualCursor = Vector2.zero;
-            lastRecordedPosition = Vector2.zero;  // ⭐ 新增：初始化
+            lastRecordedPosition = Vector2.zero;
             Debug.Log($"[UDP] 開始記錄");
         }
     }
@@ -808,7 +610,6 @@ public class UDPReceiver : MonoBehaviour
         return new List<Vector2>(currentTrajectory);
     }
 
-    // ⭐ 新增：公開方法讓 GestureChain 取得陀螺儀 GX 軸
     public float GetGyroX()
     {
         return lastGX;
