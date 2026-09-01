@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -190,6 +190,7 @@ public class WandTrajectoryExtractor : MonoBehaviour
             }
         }
     }
+
     private List<Vector2> ExtractRedMarkerPixels()
     {
         List<Vector2> result = new List<Vector2>();
@@ -219,16 +220,18 @@ public class WandTrajectoryExtractor : MonoBehaviour
 
     private bool IsRedMarker(Color pixel)
     {
-        // ⭐ 直接用整數比較（比浮點快）
-        byte r = (byte)(pixel.r * 255);
-        byte g = (byte)(pixel.g * 255);
-        byte b = (byte)(pixel.b * 255);
+        // ⭐ 使用 HSV 方法更精確
+        float h, s, v;
+        Color.RGBToHSV(pixel, out h, out s, out v);
 
-        if (r < 102) return false;          // R >= 40% (102/255)
-        if ((r - g) < 26) return false;     // R-G >= 10% (26/255)
-        if ((r - b) < 26) return false;     // R-B >= 10%
+        // 紅色範圍：H ≈ 0 或 ≈ 1（0-360°）
+        bool isRedHue = (h < 0.05f || h > 0.95f);  // ±30° 範圍
 
-        return true;
+        // 飽和度和亮度要求
+        bool isSaturated = s > 0.30f;  // 足夠鮮豔
+        bool isBright = v > 0.30f;      // 足夠明亮
+
+        return isRedHue && isSaturated && isBright;
     }
 
     private Vector2 CalculateCentroid(List<Vector2> points)
