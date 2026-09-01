@@ -3,34 +3,34 @@ using System.Collections.Generic;
 using UnityEngine;
 
 /// <summary>
-/// ⭐ 改进的手势识别器 - 支持潦草/变形图形
-/// 结合多种几何特征分析，提高识别准确率
+/// ⭐ 改進的手勢識別器 - 支持潦草/變形圖形
+/// 結合多種幾何特徵分析，提高識別準確率
 /// </summary>
 public static class ImprovedGestureRecognizer
 {
-    // ========== 识别参数配置 ==========
+    // ========== 識別參數配置 ==========
     [System.Serializable]
     public class RecognitionConfig
     {
-        [Range(0f, 1f)] public float circleRoundnessThreshold = 0.55f;    // 圆形圆度阈值
-        [Range(0f, 1f)] public float squareAngularityThreshold = 0.50f;   // 正方形角度阈值
-        [Range(0f, 1f)] public float triangleSharpnessThreshold = 0.48f;  // 三角形尖锐度阈值
-        [Range(0f, 1f)] public float oneJollarFallbackThreshold = 0.45f;  // One Dollar 备选阈值
-        [Range(0f, 1f)] public float minAspectRatioForSquare = 0.65f;     // 正方形最小宽高比
-        
+        [Range(0f, 1f)] public float circleRoundnessThreshold = 0.55f;    // 圓形圓度閾值
+        [Range(0f, 1f)] public float squareAngularityThreshold = 0.50f;   // 正方形角度閾值
+        [Range(0f, 1f)] public float triangleSharpnessThreshold = 0.48f;  // 三角形尖銳度閾值
+        [Range(0f, 1f)] public float oneJollarFallbackThreshold = 0.45f;  // One Dollar 備選閾值
+        [Range(0f, 1f)] public float minAspectRatioForSquare = 0.65f;     // 正方形最小寬高比
+
         public bool enableDebugLog = true;
     }
 
     private static RecognitionConfig config = new RecognitionConfig();
 
-    // ========== 核心识别方法 ==========
+    // ========== 核心識別方法 ==========
     /// <summary>
-    /// 改进的分类方法 - 支持潦草图形
-    /// 返回识别的图形名称与信心度
+    /// 改進的分類方法 - 支持潦草圖形
+    /// 返回識別的圖形名稱與信心度
     /// </summary>
     public static string ClassifyImproved(
-        List<Vector2> candidatePoints, 
-        List<OneDollarRecognizer.GestureTemplate> templates, 
+        List<Vector2> candidatePoints,
+        List<OneDollarRecognizer.GestureTemplate> templates,
         out float confidence,
         RecognitionConfig cfg = null)
     {
@@ -40,57 +40,57 @@ public static class ImprovedGestureRecognizer
         if (candidatePoints.Count < 10 || templates.Count == 0)
             return "None";
 
-        // ========== 第一阶段：几何特征提取 ==========
+        // ========== 第一階段：幾何特徵提取 ==========
         GeometricFeatures features = AnalyzeGeometricFeatures(candidatePoints);
 
         if (config.enableDebugLog)
         {
-            Debug.Log($"[识别] 几何特征:");
-            Debug.Log($"  - 圆度: {features.roundness:F3}");
+            Debug.Log($"[識別] 幾何特徵:");
+            Debug.Log($"  - 圓度: {features.roundness:F3}");
             Debug.Log($"  - 角度: {features.angularity:F3}");
-            Debug.Log($"  - 尖锐: {features.sharpness:F3}");
-            Debug.Log($"  - 宽高比: {features.aspectRatio:F3}");
-            Debug.Log($"  - 周长比: {features.perimeterRatio:F3}");
+            Debug.Log($"  - 尖銳: {features.sharpness:F3}");
+            Debug.Log($"  - 寬高比: {features.aspectRatio:F3}");
+            Debug.Log($"  - 周長比: {features.perimeterRatio:F3}");
         }
 
-        // ========== 第二阶段：基于特征的初步判定 ==========
+        // ========== 第二階段：基於特徵的初步判定 ==========
         string preliminaryResult = ClassifyByGeometricFeatures(features);
 
-        // ========== 第三阶段：One Dollar 模板匹配（作为备选） ==========
+        // ========== 第三階段：One Dollar 模板匹配（作為備選） ==========
         List<Vector2> processedPoints = OneDollarRecognizer.ProcessPoints(candidatePoints);
         string oneJollarResult = ClassifyByTemplateMatching(processedPoints, templates, out float oneJollarScore);
 
-        // ========== 第四阶段：融合决策 ==========
+        // ========== 第四階段：融合決策 ==========
         string finalResult = FusionDecision(preliminaryResult, features, oneJollarResult, oneJollarScore, out confidence);
 
         if (config.enableDebugLog)
         {
-            Debug.Log($"[识别] 最终结果: {finalResult} (信心: {confidence:F3})");
+            Debug.Log($"[識別] 最終結果: {finalResult} (信心: {confidence:F3})");
         }
 
         return finalResult;
     }
 
-    // ========== 几何特征结构 ==========
+    // ========== 幾何特徵結構 ==========
     private struct GeometricFeatures
     {
-        public float roundness;        // 圆度 (0-1)
+        public float roundness;        // 圓度 (0-1)
         public float angularity;       // 角度 (0-1)
-        public float sharpness;        // 尖锐度 (0-1)
-        public float aspectRatio;      // 宽高比 (0-1)
-        public float perimeterRatio;   // 周长比 (接近1为圆形)
-        public float pathStraightness; // 路径直度
-        public int estimatedCorners;   // 估计角点数
+        public float sharpness;        // 尖銳度 (0-1)
+        public float aspectRatio;      // 寬高比 (0-1)
+        public float perimeterRatio;   // 周長比 (接近1為圓形)
+        public float pathStraightness; // 路徑直度
+        public int estimatedCorners;   // 估計角點數
     }
 
-    // ========== 几何特征分析 ==========
+    // ========== 幾何特徵分析 ==========
     private static GeometricFeatures AnalyzeGeometricFeatures(List<Vector2> points)
     {
         GeometricFeatures features = new GeometricFeatures();
 
         if (points.Count < 5) return features;
 
-        // 1. 计算边界框和宽高比
+        // 1. 計算邊界框和寬高比
         float minX = float.MaxValue, maxX = float.MinValue;
         float minY = float.MaxValue, maxY = float.MinValue;
 
@@ -108,7 +108,7 @@ public static class ImprovedGestureRecognizer
 
         features.aspectRatio = Mathf.Min(width, height) / Mathf.Max(width, height);
 
-        // 2. 计算圆度
+        // 2. 計算圓度
         Vector2 center = new Vector2((minX + maxX) / 2f, (minY + maxY) / 2f);
         float avgDistance = 0f;
         float distanceVariance = 0f;
@@ -127,27 +127,27 @@ public static class ImprovedGestureRecognizer
         float circularity = features.aspectRatio * (1f - Mathf.Clamp01(distanceVariance / (avgDistance + 0.001f)));
         features.roundness = Mathf.Clamp01(circularity);
 
-        // 3. 计算周长比（用于区分圆形）
+        // 3. 計算周長比（用於區分圓形）
         float pathLength = CalculatePathLength(points);
         float bBoxPerimeter = (width + height) * 2f;
         features.perimeterRatio = bBoxPerimeter > 0 ? (pathLength / bBoxPerimeter) : 0f;
 
-        // 4. 计算角度和尖锐度
+        // 4. 計算角度和尖銳度
         (features.angularity, features.estimatedCorners) = AnalyzeCorners(points);
         features.sharpness = AnalyzeSharpness(points);
 
-        // 5. 计算路径直度
+        // 5. 計算路徑直度
         features.pathStraightness = AnalyzePathStraightness(points);
 
         return features;
     }
 
-    // ========== 圆角分析 ==========
+    // ========== 圓角分析 ==========
     private static (float angularity, int corners) AnalyzeCorners(List<Vector2> points)
     {
         if (points.Count < 5) return (0f, 0);
 
-        // 采样均匀的点，避免噪声
+        // 採樣均勻的點，避免噪聲
         List<Vector2> sampledPoints = new List<Vector2>();
         int sampleStep = Mathf.Max(1, points.Count / 16);
         for (int i = 0; i < points.Count; i += sampleStep)
@@ -159,7 +159,7 @@ public static class ImprovedGestureRecognizer
         float totalAngleChange = 0f;
         int angleCount = 0;
 
-        // 使用 Ramer-Douglas-Peucker 简化
+        // 使用 Ramer-Douglas-Peucker 簡化
         List<Vector2> simplified = SimplifyPath(sampledPoints, 5f);
 
         for (int i = 1; i < simplified.Count - 1; i++)
@@ -171,20 +171,20 @@ public static class ImprovedGestureRecognizer
             totalAngleChange += angle;
             angleCount++;
 
-            // 检测角点（60-130 度）
+            // 檢測角點（60-130 度）
             if (angle > 60f && angle < 130f)
                 cornerCount++;
         }
 
         float avgAngle = angleCount > 0 ? (totalAngleChange / angleCount) : 0f;
-        float cornerRatio = Mathf.Clamp01(cornerCount / 4f);  // 正方形有 4 个角
+        float cornerRatio = Mathf.Clamp01(cornerCount / 4f);  // 正方形有 4 個角
         float angleConsistency = 1f - Mathf.Abs((avgAngle - 90f) / 90f);
 
         float angularity = Mathf.Lerp(cornerRatio, angleConsistency, 0.5f);
         return (Mathf.Clamp01(angularity), cornerCount);
     }
 
-    // ========== 尖锐度分析（三角形） ==========
+    // ========== 尖銳度分析（三角形） ==========
     private static float AnalyzeSharpness(List<Vector2> points)
     {
         if (points.Count < 5) return 0f;
@@ -220,7 +220,7 @@ public static class ImprovedGestureRecognizer
 
         if (angleCount == 0) return 0f;
 
-        // 三角形应该有 3 个尖角
+        // 三角形應該有 3 個尖角
         float cornerRatio = Mathf.Clamp01(sharpCorners / 3f);
         float avgAngle = totalAngle / Mathf.Max(1, sharpCorners);
         float angleSharpness = Mathf.Clamp01((avgAngle - 70f) / 90f);
@@ -229,7 +229,7 @@ public static class ImprovedGestureRecognizer
         return Mathf.Clamp01(sharpness);
     }
 
-    // ========== 路径直度分析 ==========
+    // ========== 路徑直度分析 ==========
     private static float AnalyzePathStraightness(List<Vector2> points)
     {
         if (points.Count < 3) return 0f;
@@ -249,7 +249,7 @@ public static class ImprovedGestureRecognizer
         {
             totalLength += Vector2.Distance(points[i - 1], points[i]);
 
-            // 计算点到直线的偏离度
+            // 計算點到直線的偏離度
             Vector2 toPoint = points[i] - start;
             float projection = Vector2.Dot(toPoint, direction);
             Vector2 closest = start + direction * projection;
@@ -262,13 +262,13 @@ public static class ImprovedGestureRecognizer
         return Mathf.Clamp01(straightness);
     }
 
-    // ========== 基于几何特征的初步判定 ==========
+    // ========== 基於幾何特徵的初步判定 ==========
     private static string ClassifyByGeometricFeatures(GeometricFeatures features)
     {
-        // 优先级：圆形 > 三角形 > 正方形
+        // 優先級：圓形 > 三角形 > 正方形
 
-        // 1. 圆形判定
-        if (features.roundness > config.circleRoundnessThreshold && 
+        // 1. 圓形判定
+        if (features.roundness > config.circleRoundnessThreshold &&
             features.estimatedCorners <= 1 &&
             features.perimeterRatio < 0.9f)
         {
@@ -276,22 +276,22 @@ public static class ImprovedGestureRecognizer
         }
 
         // 2. 三角形判定
-        if (features.sharpness > config.triangleSharpnessThreshold && 
+        if (features.sharpness > config.triangleSharpnessThreshold &&
             features.estimatedCorners >= 2 && features.estimatedCorners <= 4)
         {
             return "Triangle";
         }
 
         // 3. 正方形判定
-        if (features.angularity > config.squareAngularityThreshold && 
+        if (features.angularity > config.squareAngularityThreshold &&
             features.aspectRatio > config.minAspectRatioForSquare &&
             features.estimatedCorners >= 3)
         {
             return "Square";
         }
 
-        // 4. 备选判定（基于最高分数）
-        if (features.roundness > features.angularity && 
+        // 4. 備選判定（基於最高分數）
+        if (features.roundness > features.angularity &&
             features.roundness > features.sharpness)
         {
             return "Circle";
@@ -319,7 +319,7 @@ public static class ImprovedGestureRecognizer
 
         foreach (var template in templates)
         {
-            float dist = OneDollarRecognizer.DistanceAtBestAngle(processedPoints, template.Points, -45f, 45f, 2f);
+            float dist = OneDollarRecognizerExtensions.DistanceAtBestAngle(processedPoints, template.Points, -45f, 45f, 2f);
 
             if (dist < bestDistance)
             {
@@ -334,7 +334,7 @@ public static class ImprovedGestureRecognizer
         return bestName;
     }
 
-    // ========== 融合决策 ==========
+    // ========== 融合決策 ==========
     private static string FusionDecision(
         string geometricResult,
         GeometricFeatures features,
@@ -344,7 +344,7 @@ public static class ImprovedGestureRecognizer
     {
         finalConfidence = 0f;
 
-        // 如果几何特征很明确，使用几何结果
+        // 如果幾何特徵很明確，使用幾何結果
         float maxGeometricScore = Mathf.Max(features.roundness, features.angularity, features.sharpness);
 
         if (maxGeometricScore > 0.65f)  // 高信心度
@@ -353,14 +353,14 @@ public static class ImprovedGestureRecognizer
             return geometricResult;
         }
 
-        // 如果 One Dollar 结果很好，使用 One Dollar
+        // 如果 One Dollar 結果很好，使用 One Dollar
         if (oneJollarScore > config.oneJollarFallbackThreshold)
         {
             finalConfidence = oneJollarScore;
             return oneJollarResult;
         }
 
-        // 混合判定：综合几何特征和 One Dollar
+        // 混合判定：綜合幾何特徵和 One Dollar
         if (geometricResult == oneJollarResult)
         {
             // 一致：高信心
@@ -368,7 +368,7 @@ public static class ImprovedGestureRecognizer
             return geometricResult;
         }
 
-        // 不一致：选择分数更高的
+        // 不一致：選擇分數更高的
         if (maxGeometricScore > oneJollarScore)
         {
             finalConfidence = maxGeometricScore;
@@ -381,7 +381,7 @@ public static class ImprovedGestureRecognizer
         }
     }
 
-    // ========== 辅助方法 ==========
+    // ========== 輔助方法 ==========
 
     private static float CalculatePathLength(List<Vector2> points)
     {
@@ -392,8 +392,8 @@ public static class ImprovedGestureRecognizer
     }
 
     /// <summary>
-    /// Ramer-Douglas-Peucker 路径简化算法
-    /// 用于减少噪声点
+    /// Ramer-Douglas-Peucker 路徑簡化算法
+    /// 用於減少噪聲點
     /// </summary>
     private static List<Vector2> SimplifyPath(List<Vector2> points, float epsilon)
     {
@@ -434,7 +434,7 @@ public static class ImprovedGestureRecognizer
         return new List<Vector2> { start, end };
     }
 
-    // ========== 公开方法：调整配置 ==========
+    // ========== 公開方法：調整配置 ==========
     public static void SetConfiguration(RecognitionConfig cfg)
     {
         config = cfg;
@@ -446,7 +446,7 @@ public static class ImprovedGestureRecognizer
     }
 }
 
-// ========== OneDollarRecognizer 扩展方法 ==========
+// ========== OneDollarRecognizer 擴展方法 ==========
 public static class OneDollarRecognizerExtensions
 {
     public static float DistanceAtBestAngle(
