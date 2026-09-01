@@ -5,7 +5,7 @@ using UnityEngine.InputSystem;
 #endif
 
 /// <summary>
-/// GestureDrawer V0.1.0 - 改進版
+/// GestureDrawer V0.2.0 - 改進版
 /// 通過降低最小移動距離和增加平滑因子來改進線條平滑度
 /// 線條繪製全部交給 UDPReceiver
 /// </summary>
@@ -49,7 +49,7 @@ public class GestureDrawer : MonoBehaviour
             return;
         }
 
-        Debug.Log("✓ GestureDrawer V0.1.0 初始化完成（已啟用密集點記錄）");
+        Debug.Log("✓ GestureDrawer V0.2.0 初始化完成（已啟用密集點記錄與補點）");
     }
 
     void Update()

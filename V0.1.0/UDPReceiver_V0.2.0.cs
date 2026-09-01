@@ -34,7 +34,7 @@ public class UDPReceiver : MonoBehaviour
     [SerializeField] private bool useStrokeSpeedAnalysis = true;
     [SerializeField] private float gapFillMaximumSegmentLength = 10f;
 
-    [Header("=== 手勢分類閾值 (V0.1.0+) ===")]
+    [Header("=== 手勢分類閾值 (V0.2.0+) ===")]
     [SerializeField] private float circleThreshold = 0.60f;      // 圓形判定閾值
     [SerializeField] private float triangleThreshold = 0.50f;    // 三角形判定閾值  
     [SerializeField] private float squareThreshold = 0.55f;      // 正方形判定閾值
@@ -412,7 +412,7 @@ public class UDPReceiver : MonoBehaviour
     }
 
     /// <summary>
-    /// ⭐ V0.1.0+ 改進版：解決「全判成正方形」問題
+    /// ⭐ V0.2.0+ 改進版：解決「全判成正方形」問題
     /// 核心改進：加入排他性檢查 + 明確的優先級判定
     /// </summary>
     private string ClassifyGestureWithImprovedLogic(List<Vector2> points, out float score)
