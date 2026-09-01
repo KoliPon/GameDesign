@@ -402,6 +402,8 @@ public class GestureChain : MonoBehaviour
 
         cooldownTimer = attackCooldown;
         currentState = GestureState.Cooldown;
+        firstTrajectory.Clear();
+        secondTrajectory.Clear();
         Debug.Log($"⏳ 開始冷卻 ({attackCooldown}s)");
 
         StartCoroutine(ResetDelayed(0.5f));
@@ -579,4 +581,5 @@ public class GestureChain : MonoBehaviour
 
     public List<string> GetCurrentGestureSequence() => new List<string>(gestureSequence);
     public float GetCurrentGValue() => lastGValue;
+    public bool IsInCooldown() => currentState == GestureState.Cooldown;
 }
