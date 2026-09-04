@@ -1,11 +1,11 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
 
 /// <summary>
-/// GestureDrawer V0.1.0 - 改進版
+/// GestureDrawer V0.2.0 - 改進版
 /// 通過降低最小移動距離和增加平滑因子來改進線條平滑度
 /// 線條繪製全部交給 UDPReceiver
 /// </summary>
@@ -15,6 +15,7 @@ public class GestureDrawer : MonoBehaviour
     [SerializeField] private bool enableSmoothing = true;
     [SerializeField] private float smoothingFactor = 0.5f; // 改進：0.3 → 0.5（增加平滑強度）
     [SerializeField] private float minimumPointDistance = 1f; // 新增：點與點之間的最小距離
+    [SerializeField] private float gapFillMaximumSegmentLength = 10f;
 
     private List<Vector2> rawPoints = new List<Vector2>();
     private bool isDrawing = false;
@@ -48,7 +49,7 @@ public class GestureDrawer : MonoBehaviour
             return;
         }
 
-        Debug.Log("✓ GestureDrawer V0.1.0 初始化完成（已啟用密集點記錄）");
+        Debug.Log("✓ GestureDrawer V0.2.0 初始化完成（已啟用密集點記錄與補點）");
     }
 
     void Update()
@@ -138,7 +139,7 @@ public class GestureDrawer : MonoBehaviour
 
         // ⭐ 改進邏輯：只有距離足夠時才記錄
         float distance = Vector2.Distance(screenPos, lastRecordedPoint);
-        
+
         if (distance >= minimumPointDistance)
         {
             rawPoints.Add(screenPos);
@@ -169,9 +170,11 @@ public class GestureDrawer : MonoBehaviour
         {
             Debug.Log($"[DEBUG] 點數足夠，開始平滑化");
 
+            List<Vector2> gapFilledTrajectory =
+                ShapeNormalizer.FillGaps(trajectory, gapFillMaximumSegmentLength);
             List<Vector2> smoothedPoints = enableSmoothing ?
-                SmoothPoints(trajectory) :
-                trajectory;
+                SmoothPoints(gapFilledTrajectory) :
+                gapFilledTrajectory;
 
             Debug.Log($"[DEBUG] 平滑化後: {smoothedPoints.Count} 個點");
 
@@ -184,8 +187,8 @@ public class GestureDrawer : MonoBehaviour
             {
                 Debug.Log($"[DEBUG] 即將呼叫 RecognizeGesture");
                 // ⭐ 改這裡：傳送 smoothedPoints 和 trajectory（原始軌跡用於顯示）
-                gestureChain.RecognizeGesture(smoothedPoints, trajectory);
-                Debug.Log($"✓ 已傳送 {trajectory.Count} 個點給 GestureChain");
+                gestureChain.RecognizeGesture(smoothedPoints, gapFilledTrajectory);
+                Debug.Log($"✓ 已傳送 {gapFilledTrajectory.Count} 個補點後軌跡給 GestureChain");
 
                 StartCoroutine(ClearLineDelayed(3.0f));
                 return;
