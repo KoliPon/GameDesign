@@ -65,7 +65,6 @@ public class BattleManager : MonoBehaviour
 
     // ⭐ V0.2.0 新增系統引用
     private PlayerDefenseShield playerDefenseShield;
-    private EnemyEffectManager enemyEffectManager;
     private PlayerAttackBeamEffect playerAttackBeamEffect;
 
     void Awake()
@@ -112,15 +111,7 @@ public class BattleManager : MonoBehaviour
             playerDefenseShield = shieldObj.AddComponent<PlayerDefenseShield>();
         }
 
-        // 獲取或創建敵人特效管理器
-        enemyEffectManager = FindObjectOfType<EnemyEffectManager>();
-        if (enemyEffectManager == null)
-        {
-            Debug.LogWarning("[BattleManager V0.2.0] 未找到 EnemyEffectManager，正在創建...");
-            GameObject effectObj = new GameObject("EnemyEffectManager");
-            effectObj.transform.SetParent(transform);
-            enemyEffectManager = effectObj.AddComponent<EnemyEffectManager>();
-        }
+        // ⭐ V0.2.1：敵人光束特效已取消，不再建立 EnemyEffectManager
 
         // ⭐ 新增：獲取或創建玩家攻擊光束系統
         playerAttackBeamEffect = FindObjectOfType<PlayerAttackBeamEffect>();
@@ -134,7 +125,6 @@ public class BattleManager : MonoBehaviour
 
         Debug.Log("[BattleManager V0.2.0] ✓ 新系統初始化完成");
         Debug.Log($"  - 玩家防禦護盾: {(playerDefenseShield != null ? "✓" : "✗")}");
-        Debug.Log($"  - 敵人特效管理器: {(enemyEffectManager != null ? "✓" : "✗")}");
         Debug.Log($"  - 玩家攻擊光束: {(playerAttackBeamEffect != null ? "✓" : "✗")}");  // ⭐ 新增
         Debug.Log($"  - 手勢邏輯反轉: {(enableGestureReversal ? "啟用" : "禁用")}");
     }
@@ -169,18 +159,19 @@ public class BattleManager : MonoBehaviour
     /// </summary>
     private void HandleEnemyChargeStart(int enemyID)
     {
-        Debug.Log($"[BattleManager] 敵人 {enemyID} 開始出招");
-
-        // ⭐ V0.2.0：創建敵人光束特效
-        if (enemyDict.ContainsKey(enemyID))
+        // ⭐ V0.2.1：敵人光束特效已取消，僅保留玩家光束（PlayerAttackBeamEffect）
+        if (enemyDict.TryGetValue(enemyID, out EnemyController enemy))
         {
-            EnemyController enemy = enemyDict[enemyID];
-            string attackType = "Circle"; // 預設值，實際應該從敵人系統獲取
+            // 舉盾時提示屬性即護盾屬性，且不會攻擊玩家
+            string info = enemy.HasActiveShield()
+                ? $"舉起 {enemy.GetShieldType()} 護盾（防禦姿態，不會攻擊）"
+                : $"蓄力攻擊（要求: {enemy.GetRequiredSpell()}）";
 
-            if (enemyEffectManager != null)
-            {
-                enemyEffectManager.CreateEnemyBeam(enemyID, enemy.transform, attackType, 3.5f);
-            }
+            Debug.Log($"[BattleManager] 敵人 {enemyID} {info}");
+        }
+        else
+        {
+            Debug.Log($"[BattleManager] 敵人 {enemyID} 開始出招");
         }
     }
 
@@ -230,12 +221,6 @@ public class BattleManager : MonoBehaviour
     private void HandleEnemyStunned(int enemyID, float duration)
     {
         Debug.Log($"[BattleManager] 敵人 {enemyID} 進入僵直狀態，持續 {duration}s");
-
-        // 銷毀敵人光束特效
-        if (enemyEffectManager != null)
-        {
-            enemyEffectManager.DestroyEnemyBeam(enemyID);
-        }
     }
 
     /// <summary>
@@ -245,12 +230,6 @@ public class BattleManager : MonoBehaviour
     {
         defeatedEnemyCount++;
         Debug.Log($"[BattleManager] 敵人 {enemyID} 被擊敗 ({defeatedEnemyCount}/{enemies.Length})");
-
-        // ⭐ V0.2.0：銷毀敵人光束特效
-        if (enemyEffectManager != null)
-        {
-            enemyEffectManager.DestroyEnemyBeam(enemyID);
-        }
 
         if (defeatedEnemyCount >= enemies.Length)
         {
@@ -287,11 +266,15 @@ public class BattleManager : MonoBehaviour
             return;
         }
 
+        // ⭐ V0.2.1：保留玩家「實際畫出」的手勢 — 護盾判定必須用它，
+        //    不能用反轉後的名稱（否則等於反轉兩次，護盾條件會顛倒）
+        string drawnSpell = spellName;
+
         // ⭐ V0.2.0：手勢邏輯反轉
         if (enableGestureReversal)
         {
             spellName = ReverseGestureLogic(spellName);
-            Debug.Log($"[BattleManager] 手勢已反轉: {spellName}");
+            Debug.Log($"[BattleManager] 手勢已反轉: {drawnSpell} → {spellName}");
         }
 
         string firstGesture = ExtractFirstGestureFromCombo(spellName);
@@ -338,17 +321,28 @@ public class BattleManager : MonoBehaviour
             Debug.Log($"[玩家光束] 創建 {firstGesture} 光束");
         }
 
-        // 🎯 檢查所有正在出招的敵人
+        // 🎯 V0.2.1 全體攻擊：對「所有」正在出招的敵人各自判定，不再只結算第一個
+        //    每隻敵人依自己的護盾屬性與要求招式獨立判定，可同時打斷多隻
+        int hitCount = 0;
+        int chargingCount = 0;
+
         foreach (var enemy in enemies)
         {
-            if (enemy.IsCharging() && !enemy.IsStunned())
+            if (enemy == null) continue;
+            if (!enemy.IsCharging() || enemy.IsStunned()) continue;
+
+            chargingCount++;
+
+            if (enemy.TakeSpellDamage(spellName, drawnSpell))
             {
-                if (enemy.TakeSpellDamage(spellName))
-                {
-                    Debug.Log($"玩家成功用 {spellName} 打斷敵人 {enemy.GetEnemyID()} 的攻擊！");
-                    break;
-                }
+                hitCount++;
+                Debug.Log($"[全體攻擊] ✓ 用 {drawnSpell} 打斷敵人 {enemy.GetEnemyID()} 的攻擊！");
             }
+        }
+
+        if (chargingCount > 0)
+        {
+            Debug.Log($"[全體攻擊] 本次命中 {hitCount}/{chargingCount} 個出招中的敵人");
         }
     }
 
